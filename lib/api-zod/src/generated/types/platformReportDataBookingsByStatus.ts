@@ -6,6 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
-}
+export type PlatformReportDataBookingsByStatus = {
+  pending: number;
+  confirmed: number;
+  completed: number;
+  cancelled: number;
+};

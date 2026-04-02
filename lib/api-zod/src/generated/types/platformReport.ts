@@ -5,7 +5,9 @@
  * Multi-Vendor Service Booking Platform API
  * OpenAPI spec version: 0.1.0
  */
+import type { PlatformReportData } from "./platformReportData";
 
-export interface HealthStatus {
-  status: string;
+export interface PlatformReport {
+  success: boolean;
+  data: PlatformReportData;
 }

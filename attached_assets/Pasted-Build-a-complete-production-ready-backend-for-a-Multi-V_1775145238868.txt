@@ -1,0 +1,240 @@
+Build a complete, production-ready backend for a **Multi-Vendor Service Booking Platform** using **Node.js, Express.js, and MongoDB (Mongoose ORM)** following clean architecture and best practices.
+
+---
+
+## 🧱 Tech Stack Requirements
+
+* Node.js + Express.js
+* MongoDB with Mongoose
+* JWT Authentication
+* bcrypt for password hashing
+* dotenv for environment variables
+* express-validator for validation
+* multer (optional for file uploads like vendor/service images)
+* nodemon for development
+* MVC folder structure
+* RESTful API design
+
+---
+
+## 📁 Folder Structure
+
+Create a scalable architecture:
+
+* /config (DB connection, env setup)
+* /controllers (business logic)
+* /models (Mongoose schemas)
+* /routes (API routes)
+* /middlewares (auth, error handling, role-based access)
+* /utils (helpers, constants)
+* /services (optional business layer)
+* server.js (entry point)
+
+---
+
+## 🔐 Authentication & Authorization
+
+Implement secure JWT-based authentication:
+
+* User roles:
+
+  * customer
+  * vendor
+  * admin
+
+* Features:
+
+  * Register (User & Vendor)
+  * Login
+  * Password hashing using bcrypt
+  * JWT token generation
+  * Middleware to protect routes
+  * Role-based access control (RBAC)
+
+---
+
+## 👤 User Module APIs
+
+* POST /api/auth/register (customer)
+* POST /api/auth/login
+* GET /api/users/profile (protected)
+* GET /api/services (browse services)
+* GET /api/services/:id (service details)
+* POST /api/bookings (create booking)
+* GET /api/bookings/my (user booking history)
+* POST /api/reviews (add review)
+
+Features:
+
+* Search + filter services (category, price, rating)
+* Booking history with status
+
+---
+
+## 🧑‍🔧 Vendor Module APIs
+
+* POST /api/vendor/register
+* POST /api/vendor/login
+* GET /api/vendor/dashboard
+* POST /api/services (add service)
+* PUT /api/services/:id (update service)
+* DELETE /api/services/:id (delete service)
+* GET /api/vendor/bookings
+* PATCH /api/vendor/bookings/:id (update status)
+
+Features:
+
+* Vendors can manage their services
+* Accept/reject bookings
+* View earnings (optional)
+
+---
+
+## 🛡️ Admin Module APIs
+
+* GET /api/admin/users
+* GET /api/admin/vendors
+* PATCH /api/admin/vendors/:id/approve
+* DELETE /api/admin/users/:id
+* GET /api/admin/bookings
+* GET /api/admin/reports
+
+Features:
+
+* Approve/reject vendors
+* Monitor platform activity
+* Analytics (basic counts)
+
+---
+
+## 📅 Booking System
+
+Booking workflow:
+
+1. Select service
+2. Choose date & time
+3. Confirm booking
+
+Booking fields:
+
+* userId
+* vendorId
+* serviceId
+* date
+* time
+* status (pending, confirmed, completed, cancelled)
+
+---
+
+## 💳 Payment System (Mock)
+
+* Create dummy payment endpoint:
+
+  * POST /api/payments/checkout
+* Mark booking as paid
+* Store payment status
+
+---
+
+## 🧾 Database Schema Design (Mongoose Models)
+
+### User Model
+
+* name
+* email
+* password
+* role (customer/vendor/admin)
+* createdAt
+
+### Vendor Model
+
+* userId (ref)
+* businessName
+* isApproved
+* services (array ref)
+
+### Service Model
+
+* title
+* description
+* price
+* category
+* vendorId
+* rating
+
+### Booking Model
+
+* userId
+* vendorId
+* serviceId
+* date
+* time
+* status
+* paymentStatus
+
+### Review Model
+
+* userId
+* serviceId
+* rating
+* comment
+
+---
+
+## 🔍 Validation & Security
+
+* Validate all inputs (express-validator)
+* Sanitize inputs
+* Use JWT middleware
+* Protect sensitive routes
+* Error handling middleware
+* Rate limiting (optional)
+
+---
+
+## ⚡ Non-Functional Requirements
+
+* API response time < 3 seconds
+* Clean JSON responses
+* Proper HTTP status codes
+* Scalable and modular structure
+
+---
+
+## 📦 Extra Features (Important)
+
+* Pagination for services
+* Search functionality (keyword-based)
+* Sorting (price, rating)
+* Logging (console or middleware)
+* Centralized error handler
+
+---
+
+## 🧪 Testing & Documentation
+
+* Use Postman collection
+* Add sample API responses
+* Proper API documentation comments
+
+---
+
+## 🚀 Final Output Expectations
+
+* Fully working backend server
+* Modular, clean code
+* Ready to integrate with React frontend
+* All APIs functional and tested
+
+---
+
+IMPORTANT:
+
+* Follow best practices strictly
+* Write clean, readable code
+* Use async/await everywhere
+* Avoid callback hell
+* Use environment variables for secrets
+* Ensure production-ready structure
+
+---

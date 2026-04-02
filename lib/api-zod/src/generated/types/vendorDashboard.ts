@@ -5,7 +5,9 @@
  * Multi-Vendor Service Booking Platform API
  * OpenAPI spec version: 0.1.0
  */
+import type { VendorDashboardData } from "./vendorDashboardData";
 
-export interface HealthStatus {
-  status: string;
+export interface VendorDashboard {
+  success: boolean;
+  data: VendorDashboardData;
 }

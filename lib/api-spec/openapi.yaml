@@ -3,13 +3,30 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Multi-Vendor Service Booking Platform API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: auth
+    description: Authentication
+  - name: users
+    description: User operations
+  - name: vendors
+    description: Vendor operations
+  - name: services
+    description: Service management
+  - name: bookings
+    description: Booking management
+  - name: reviews
+    description: Reviews
+  - name: payments
+    description: Payments
+  - name: admin
+    description: Admin operations
+
 paths:
   /healthz:
     get:
@@ -24,7 +41,592 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /auth/register:
+    post:
+      operationId: registerCustomer
+      tags: [auth]
+      summary: Register as customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterInput"
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginInput"
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /vendor/register:
+    post:
+      operationId: registerVendor
+      tags: [vendors]
+      summary: Register as vendor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VendorRegisterInput"
+      responses:
+        "201":
+          description: Vendor registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+
+  /vendor/login:
+    post:
+      operationId: vendorLogin
+      tags: [vendors]
+      summary: Vendor login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginInput"
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+
+  /vendor/dashboard:
+    get:
+      operationId: getVendorDashboard
+      tags: [vendors]
+      summary: Get vendor dashboard
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VendorDashboard"
+
+  /vendor/bookings:
+    get:
+      operationId: getVendorBookings
+      tags: [vendors]
+      summary: Get vendor bookings
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Vendor bookings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookingListResponse"
+
+  /vendor/bookings/{id}:
+    patch:
+      operationId: updateVendorBooking
+      tags: [vendors]
+      summary: Update booking status
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBookingStatusInput"
+      responses:
+        "200":
+          description: Booking updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+
+  /users/profile:
+    get:
+      operationId: getUserProfile
+      tags: [users]
+      summary: Get user profile
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+
+  /services:
+    get:
+      operationId: getServices
+      tags: [services]
+      summary: Browse services
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: minPrice
+          in: query
+          schema:
+            type: number
+        - name: maxPrice
+          in: query
+          schema:
+            type: number
+        - name: minRating
+          in: query
+          schema:
+            type: number
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [price, rating, createdAt]
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Services list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceListResponse"
+    post:
+      operationId: createService
+      tags: [services]
+      summary: Add a service (vendor only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateServiceInput"
+      responses:
+        "201":
+          description: Service created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Service"
+
+  /services/{id}:
+    get:
+      operationId: getServiceById
+      tags: [services]
+      summary: Get service details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Service details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceDetail"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      operationId: updateService
+      tags: [services]
+      summary: Update a service (vendor only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateServiceInput"
+      responses:
+        "200":
+          description: Service updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Service"
+    delete:
+      operationId: deleteService
+      tags: [services]
+      summary: Delete a service (vendor only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Service deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /bookings:
+    post:
+      operationId: createBooking
+      tags: [bookings]
+      summary: Create a booking
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBookingInput"
+      responses:
+        "201":
+          description: Booking created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+
+  /bookings/my:
+    get:
+      operationId: getMyBookings
+      tags: [bookings]
+      summary: Get user booking history
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User bookings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookingListResponse"
+
+  /reviews:
+    post:
+      operationId: createReview
+      tags: [reviews]
+      summary: Add a review
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReviewInput"
+      responses:
+        "201":
+          description: Review created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Review"
+
+  /reviews/service/{serviceId}:
+    get:
+      operationId: getServiceReviews
+      tags: [reviews]
+      summary: Get reviews for a service
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Reviews
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewListResponse"
+
+  /payments/checkout:
+    post:
+      operationId: processPayment
+      tags: [payments]
+      summary: Process payment (mock)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentInput"
+      responses:
+        "200":
+          description: Payment processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentResponse"
+
+  /admin/users:
+    get:
+      operationId: adminGetUsers
+      tags: [admin]
+      summary: Get all users
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: role
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Users list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserListResponse"
+
+  /admin/users/{id}:
+    delete:
+      operationId: adminDeleteUser
+      tags: [admin]
+      summary: Delete a user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /admin/vendors:
+    get:
+      operationId: adminGetVendors
+      tags: [admin]
+      summary: Get all vendors
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: approved
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Vendors list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VendorListResponse"
+
+  /admin/vendors/{id}/approve:
+    patch:
+      operationId: adminApproveVendor
+      tags: [admin]
+      summary: Approve or reject vendor
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproveVendorInput"
+      responses:
+        "200":
+          description: Vendor updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vendor"
+
+  /admin/bookings:
+    get:
+      operationId: adminGetBookings
+      tags: [admin]
+      summary: Get all bookings
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: status
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Bookings list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookingListResponse"
+
+  /admin/reports:
+    get:
+      operationId: adminGetReports
+      tags: [admin]
+      summary: Get platform analytics
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Platform reports
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlatformReport"
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
   schemas:
     HealthStatus:
       type: object
@@ -34,3 +636,446 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+            required: [field, message]
+      required: [success, message]
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required: [success, message]
+
+    RegisterInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 2
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 6
+      required: [name, email, password]
+
+    VendorRegisterInput:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 6
+        businessName:
+          type: string
+      required: [name, email, password, businessName]
+
+    LoginInput:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+      required: [email, password]
+
+    AuthResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/UserProfile"
+      required: [success, token, user]
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, name, email, role, createdAt]
+
+    UserListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/UserProfile"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+      required: [success, data, pagination]
+
+    Vendor:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        businessName:
+          type: string
+        isApproved:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, userId, businessName, isApproved, createdAt]
+
+    VendorListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Vendor"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+      required: [success, data, pagination]
+
+    VendorDashboard:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            totalServices:
+              type: integer
+            totalBookings:
+              type: integer
+            pendingBookings:
+              type: integer
+            confirmedBookings:
+              type: integer
+            completedBookings:
+              type: integer
+            totalEarnings:
+              type: number
+          required: [totalServices, totalBookings, pendingBookings, confirmedBookings, completedBookings, totalEarnings]
+      required: [success, data]
+
+    Service:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        price:
+          type: number
+        category:
+          type: string
+        vendorId:
+          type: string
+        rating:
+          type: number
+        reviewCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, title, description, price, category, vendorId, rating, reviewCount, createdAt]
+
+    ServiceDetail:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        price:
+          type: number
+        category:
+          type: string
+        vendorId:
+          type: string
+        vendor:
+          type: object
+          properties:
+            id:
+              type: string
+            businessName:
+              type: string
+          required: [id, businessName]
+        rating:
+          type: number
+        reviewCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, title, description, price, category, vendorId, vendor, rating, reviewCount, createdAt]
+
+    ServiceListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Service"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+      required: [success, data, pagination]
+
+    CreateServiceInput:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        price:
+          type: number
+          minimum: 0
+        category:
+          type: string
+      required: [title, description, price, category]
+
+    UpdateServiceInput:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        price:
+          type: number
+          minimum: 0
+        category:
+          type: string
+
+    Booking:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        vendorId:
+          type: string
+        serviceId:
+          type: string
+        date:
+          type: string
+        time:
+          type: string
+        status:
+          type: string
+        paymentStatus:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, userId, vendorId, serviceId, date, time, status, paymentStatus, createdAt]
+
+    BookingListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Booking"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+      required: [success, data, pagination]
+
+    CreateBookingInput:
+      type: object
+      properties:
+        serviceId:
+          type: string
+        date:
+          type: string
+        time:
+          type: string
+      required: [serviceId, date, time]
+
+    UpdateBookingStatusInput:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [confirmed, completed, cancelled]
+      required: [status]
+
+    Review:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        serviceId:
+          type: string
+        rating:
+          type: number
+        comment:
+          type: string
+        user:
+          type: object
+          properties:
+            name:
+              type: string
+          required: [name]
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, userId, serviceId, rating, comment, user, createdAt]
+
+    ReviewListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Review"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+      required: [success, data, pagination]
+
+    CreateReviewInput:
+      type: object
+      properties:
+        serviceId:
+          type: string
+        rating:
+          type: number
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+      required: [serviceId, rating, comment]
+
+    PaymentInput:
+      type: object
+      properties:
+        bookingId:
+          type: string
+        amount:
+          type: number
+      required: [bookingId, amount]
+
+    PaymentResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        transactionId:
+          type: string
+        bookingId:
+          type: string
+        amount:
+          type: number
+        paymentStatus:
+          type: string
+      required: [success, message, transactionId, bookingId, amount, paymentStatus]
+
+    ApproveVendorInput:
+      type: object
+      properties:
+        isApproved:
+          type: boolean
+      required: [isApproved]
+
+    PlatformReport:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            totalUsers:
+              type: integer
+            totalVendors:
+              type: integer
+            approvedVendors:
+              type: integer
+            pendingVendors:
+              type: integer
+            totalServices:
+              type: integer
+            totalBookings:
+              type: integer
+            bookingsByStatus:
+              type: object
+              properties:
+                pending:
+                  type: integer
+                confirmed:
+                  type: integer
+                completed:
+                  type: integer
+                cancelled:
+                  type: integer
+              required: [pending, confirmed, completed, cancelled]
+            totalRevenue:
+              type: number
+          required: [totalUsers, totalVendors, approvedVendors, pendingVendors, totalServices, totalBookings, bookingsByStatus, totalRevenue]
+      required: [success, data]
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        pages:
+          type: integer
+      required: [page, limit, total, pages]
