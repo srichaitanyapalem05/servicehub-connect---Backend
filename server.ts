@@ -24,6 +24,7 @@ import express, {
 import cors from "cors";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import nodemailer from "nodemailer";
 import { body, validationResult } from "express-validator";
 import { drizzle } from "drizzle-orm/node-postgres";
 import {
@@ -60,6 +61,61 @@ if (!process.env.DATABASE_URL) {
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const db = drizzle(pool);
+
+// ============================================================
+// SECTION 1B — EMAIL & OTP SETUP
+// ============================================================
+
+// In-memory OTP store: email → { otp, expiresAt, name, password, role, businessName? }
+interface OtpEntry {
+  otp: string;
+  expiresAt: number;
+  name: string;
+  password: string; // already hashed
+  role: "customer" | "vendor";
+  businessName?: string;
+}
+const otpStore = new Map<string, OtpEntry>();
+
+// Nodemailer transporter
+const mailer = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
+});
+
+function generateOtp(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+async function sendOtpEmail(to: string, otp: string, name: string): Promise<void> {
+  try {
+    await mailer.sendMail({
+      from: `"Atelier Services" <${process.env.EMAIL_USER}>`,
+      to,
+      subject: "Your Atelier Services verification code",
+      html: `
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#fafafa;border-radius:12px">
+          <h2 style="margin:0 0 8px;color:#111">Hi ${name},</h2>
+          <p style="color:#555;margin:0 0 24px">Use the code below to verify your email address. It expires in <strong>10 minutes</strong>.</p>
+          <div style="background:#111;color:#fff;font-size:36px;font-weight:700;letter-spacing:12px;text-align:center;padding:24px;border-radius:8px">
+            ${otp}
+          </div>
+          <p style="color:#999;font-size:13px;margin:24px 0 0">If you didn't create an account, you can safely ignore this email.</p>
+        </div>
+      `,
+    });
+    console.log(`[OTP] Email sent to ${to}`);
+  } catch (err) {
+    console.error(`[OTP] Failed to send email to ${to}:`, err);
+    throw new Error("Failed to send OTP email. Please try again.");
+  }
+}
 
 // ============================================================
 // SECTION 2 — DATABASE SCHEMA (Drizzle ORM)
@@ -108,6 +164,14 @@ const servicesTable = pgTable("services", {
     .references(() => vendorsTable.id, { onDelete: "cascade" }),
   rating: real("rating").notNull().default(0),
   reviewCount: integer("review_count").notNull().default(0),
+  status: text("status").notNull().default("pending"),
+  phone: text("phone"),
+  experience: integer("experience").default(0),
+  licenseNo: text("license_no"),
+  location: text("location"),
+  portfolio: text("portfolio"),
+  backgroundCheck: boolean("background_check").default(false),
+  images: text("images").default("[]"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -127,6 +191,12 @@ const bookingsTable = pgTable("bookings", {
   time: text("time").notNull(),
   status: bookingStatusEnum("status").notNull().default("pending"),
   paymentStatus: paymentStatusEnum("payment_status").notNull().default("unpaid"),
+  customerName: text("customer_name"),
+  customerEmail: text("customer_email"),
+  customerPhone: text("customer_phone"),
+  address: text("address"),
+  totalAmount: real("total_amount"),
+  couponCode: text("coupon_code"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -256,17 +326,16 @@ async function registerCustomer(req: Request, res: Response): Promise<void> {
   }
 
   const hashed = await bcrypt.hash(password, 12);
-  const id = generateId();
-  const [user] = await db
-    .insert(usersTable)
-    .values({ id, name, email, password: hashed, role: "customer" })
-    .returning();
+  const otp = generateOtp();
+  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-  const token = generateToken({ id: user.id, role: user.role, email: user.email });
-  res.status(201).json({
+  otpStore.set(email, { otp, expiresAt, name, password: hashed, role: "customer" });
+
+  await sendOtpEmail(email, otp, name);
+
+  res.status(200).json({
     success: true,
-    token,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role, createdAt: user.createdAt },
+    message: "OTP sent to your email. Please verify to complete registration.",
   });
 }
 
@@ -307,6 +376,74 @@ async function getUserProfile(req: AuthRequest, res: Response): Promise<void> {
   res.json({ id: user.id, name: user.name, email: user.email, role: user.role, createdAt: user.createdAt });
 }
 
+async function verifyOtp(req: Request, res: Response): Promise<void> {
+  const { email, otp } = req.body as { email: string; otp: string };
+
+  const entry = otpStore.get(email);
+
+  if (!entry) {
+    res.status(400).json({ success: false, message: "No OTP found for this email. Please register again." });
+    return;
+  }
+
+  if (Date.now() > entry.expiresAt) {
+    otpStore.delete(email);
+    res.status(400).json({ success: false, message: "OTP has expired. Please register again." });
+    return;
+  }
+
+  if (entry.otp !== otp) {
+    res.status(400).json({ success: false, message: "Invalid OTP. Please try again." });
+    return;
+  }
+
+  // OTP is valid — create the user in DB
+  const id = generateId();
+  const [user] = await db
+    .insert(usersTable)
+    .values({ id, name: entry.name, email, password: entry.password, role: entry.role })
+    .returning();
+
+  // If vendor, also create vendor profile
+  let vendor = null;
+  if (entry.role === "vendor" && entry.businessName) {
+    const [v] = await db
+      .insert(vendorsTable)
+      .values({ id: generateId(), userId: user.id, businessName: entry.businessName, isApproved: false })
+      .returning();
+    vendor = { id: v.id, businessName: v.businessName, isApproved: v.isApproved };
+  }
+
+  otpStore.delete(email);
+
+  const token = generateToken({ id: user.id, role: user.role, email: user.email });
+  res.status(201).json({
+    success: true,
+    token,
+    user: { id: user.id, name: user.name, email: user.email, role: user.role, createdAt: user.createdAt },
+    ...(vendor && { vendor }),
+  });
+}
+
+async function resendOtp(req: Request, res: Response): Promise<void> {
+  const { email } = req.body as { email: string };
+
+  const entry = otpStore.get(email);
+  if (!entry) {
+    res.status(400).json({ success: false, message: "No pending registration for this email." });
+    return;
+  }
+
+  const otp = generateOtp();
+  entry.otp = otp;
+  entry.expiresAt = Date.now() + 10 * 60 * 1000;
+  otpStore.set(email, entry);
+
+  await sendOtpEmail(email, otp, entry.name);
+
+  res.json({ success: true, message: "A new OTP has been sent to your email." });
+}
+
 // ── Vendor ───────────────────────────────────────────────────
 
 async function registerVendor(req: Request, res: Response): Promise<void> {
@@ -321,22 +458,16 @@ async function registerVendor(req: Request, res: Response): Promise<void> {
   }
 
   const hashed = await bcrypt.hash(password, 12);
-  const [user] = await db
-    .insert(usersTable)
-    .values({ id: generateId(), name, email, password: hashed, role: "vendor" })
-    .returning();
+  const otp = generateOtp();
+  const expiresAt = Date.now() + 10 * 60 * 1000;
 
-  const [vendor] = await db
-    .insert(vendorsTable)
-    .values({ id: generateId(), userId: user.id, businessName, isApproved: false })
-    .returning();
+  otpStore.set(email, { otp, expiresAt, name, password: hashed, role: "vendor", businessName });
 
-  const token = generateToken({ id: user.id, role: user.role, email: user.email });
-  res.status(201).json({
+  await sendOtpEmail(email, otp, name);
+
+  res.status(200).json({
     success: true,
-    token,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role, createdAt: user.createdAt },
-    vendor: { id: vendor.id, businessName: vendor.businessName, isApproved: vendor.isApproved },
+    message: "OTP sent to your email. Please verify to complete registration.",
   });
 }
 
@@ -432,9 +563,30 @@ async function getVendorBookings(req: AuthRequest, res: Response): Promise<void>
     .where(and(...conditions));
 
   const bookings = await db
-    .select()
+    .select({
+      id: bookingsTable.id,
+      userId: bookingsTable.userId,
+      vendorId: bookingsTable.vendorId,
+      serviceId: bookingsTable.serviceId,
+      date: bookingsTable.date,
+      time: bookingsTable.time,
+      status: bookingsTable.status,
+      paymentStatus: bookingsTable.paymentStatus,
+      customerName: bookingsTable.customerName,
+      customerEmail: bookingsTable.customerEmail,
+      customerPhone: bookingsTable.customerPhone,
+      address: bookingsTable.address,
+      createdAt: bookingsTable.createdAt,
+      serviceTitle: servicesTable.title,
+      servicePrice: servicesTable.price,
+      userName: usersTable.name,
+      userEmail: usersTable.email,
+    })
     .from(bookingsTable)
+    .leftJoin(servicesTable, eq(bookingsTable.serviceId, servicesTable.id))
+    .leftJoin(usersTable, eq(bookingsTable.userId, usersTable.id))
     .where(and(...conditions))
+    .orderBy(desc(bookingsTable.createdAt))
     .limit(limit)
     .offset(offset);
 
@@ -490,7 +642,7 @@ async function getServices(req: Request, res: Response): Promise<void> {
 
   const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
 
-  const conditions: any[] = [];
+  const conditions: any[] = [eq(servicesTable.status, "approved")];
   if (category) conditions.push(eq(servicesTable.category, category));
   if (minPrice) conditions.push(gte(servicesTable.price, Number(minPrice)));
   if (maxPrice) conditions.push(lte(servicesTable.price, Number(maxPrice)));
@@ -505,38 +657,60 @@ async function getServices(req: Request, res: Response): Promise<void> {
   const orderFn = sortOrder === "asc" ? asc : desc;
 
   const [totalResult] = await db.select({ count: count() }).from(servicesTable).where(whereClause);
-  const services = await db
-    .select()
-    .from(servicesTable)
-    .where(whereClause)
-    .orderBy(orderFn(sortColumn))
-    .limit(limit)
-    .offset(offset);
+  const services = await pool.query(
+    `SELECT id, title, description, price, category,
+            vendor_id as "vendorId", rating, review_count as "reviewCount",
+            status, phone, experience, license_no as "licenseNo",
+            location, portfolio, background_check as "backgroundCheck",
+            images, created_at as "createdAt"
+     FROM services
+     WHERE status = 'approved'
+     ${category ? `AND category = '${category.replace(/'/g, "''")}'` : ""}
+     ${search ? `AND title ILIKE '%${search.replace(/'/g, "''")}%'` : ""}
+     ${minPrice ? `AND price >= ${Number(minPrice)}` : ""}
+     ${maxPrice ? `AND price <= ${Number(maxPrice)}` : ""}
+     ${minRating ? `AND rating >= ${Number(minRating)}` : ""}
+     ORDER BY ${sortBy === "price" ? "price" : sortBy === "rating" ? "rating" : "created_at"} ${sortOrder === "asc" ? "ASC" : "DESC"}
+     LIMIT ${limit} OFFSET ${offset}`
+  );
 
-  res.json({ success: true, data: services, pagination: buildPagination(page, limit, totalResult?.count ?? 0) });
+  res.json({ success: true, data: services.rows, pagination: buildPagination(page, limit, totalResult?.count ?? 0) });
 }
 
 async function getServiceById(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
 
-  const [service] = await db.select().from(servicesTable).where(eq(servicesTable.id, id)).limit(1);
-  if (!service) {
+  const result = await pool.query(
+    `SELECT s.id, s.title, s.description, s.price, s.category,
+            s.vendor_id as "vendorId", s.rating, s.review_count as "reviewCount",
+            s.status, s.phone, s.experience, s.license_no as "licenseNo",
+            s.location, s.portfolio, s.background_check as "backgroundCheck",
+            s.images, s.created_at as "createdAt",
+            v.business_name as "vendorBusinessName"
+     FROM services s
+     LEFT JOIN vendors v ON v.id = s.vendor_id
+     WHERE s.id = $1`,
+    [id]
+  );
+
+  if (result.rows.length === 0) {
     res.status(404).json({ success: false, message: "Service not found" });
     return;
   }
 
-  const [vendor] = await db
-    .select({ id: vendorsTable.id, businessName: vendorsTable.businessName })
-    .from(vendorsTable)
-    .where(eq(vendorsTable.id, service.vendorId))
-    .limit(1);
-
-  res.json({ ...service, vendor: vendor ?? null });
+  const row = result.rows[0];
+  res.json({
+    ...row,
+    vendor: row.vendorBusinessName ? { id: row.vendorId, businessName: row.vendorBusinessName } : null,
+  });
 }
 
 async function createService(req: AuthRequest, res: Response): Promise<void> {
-  const { title, description, price, category } = req.body as {
+  const { title, description, price, category, phone, experience, licenseNo, location, portfolio, backgroundCheck, images } = req.body as {
     title: string; description: string; price: number; category: string;
+    phone?: string; experience?: number; licenseNo?: string;
+    location?: string; portfolio?: string; backgroundCheck?: boolean;
+    images?: string[];
   };
 
   const [vendor] = await db
@@ -549,14 +723,15 @@ async function createService(req: AuthRequest, res: Response): Promise<void> {
     res.status(403).json({ success: false, message: "No vendor profile found" });
     return;
   }
-  if (!vendor.isApproved) {
-    res.status(403).json({ success: false, message: "Vendor account not yet approved" });
-    return;
-  }
 
   const [service] = await db
     .insert(servicesTable)
-    .values({ id: generateId(), title, description, price, category, vendorId: vendor.id })
+    .values({
+      id: generateId(), title, description, price, category,
+      vendorId: vendor.id, phone, experience, licenseNo,
+      location, portfolio, backgroundCheck: backgroundCheck ?? false,
+      images: JSON.stringify(images ?? []),
+    })
     .returning();
 
   res.status(201).json(service);
@@ -564,7 +739,7 @@ async function createService(req: AuthRequest, res: Response): Promise<void> {
 
 async function updateService(req: AuthRequest, res: Response): Promise<void> {
   const { id } = req.params;
-  const { title, description, price, category } = req.body as Record<string, unknown>;
+  const { title, description, price, category, phone, experience, licenseNo, location, portfolio, backgroundCheck, images } = req.body as Record<string, any>;
 
   const [vendor] = await db
     .select()
@@ -593,6 +768,13 @@ async function updateService(req: AuthRequest, res: Response): Promise<void> {
   if (description !== undefined) updates.description = description;
   if (price !== undefined) updates.price = price;
   if (category !== undefined) updates.category = category;
+  if (phone !== undefined) updates.phone = phone;
+  if (experience !== undefined) updates.experience = Number(experience);
+  if (licenseNo !== undefined) updates.licenseNo = licenseNo;
+  if (location !== undefined) updates.location = location;
+  if (portfolio !== undefined) updates.portfolio = portfolio;
+  if (backgroundCheck !== undefined) updates.backgroundCheck = backgroundCheck;
+  if (images !== undefined) updates.images = JSON.stringify(images);
 
   const [updated] = await db
     .update(servicesTable)
@@ -635,7 +817,11 @@ async function deleteService(req: AuthRequest, res: Response): Promise<void> {
 // ── Bookings ──────────────────────────────────────────────────
 
 async function createBooking(req: AuthRequest, res: Response): Promise<void> {
-  const { serviceId, date, time } = req.body as { serviceId: string; date: string; time: string };
+  const { serviceId, date, time, customerName, customerEmail, customerPhone, address, totalAmount, couponCode } = req.body as {
+    serviceId: string; date: string; time: string;
+    customerName?: string; customerEmail?: string; customerPhone?: string; address?: string;
+    totalAmount?: number; couponCode?: string;
+  };
 
   const [service] = await db
     .select()
@@ -648,9 +834,25 @@ async function createBooking(req: AuthRequest, res: Response): Promise<void> {
     return;
   }
 
+  // Get user details as fallback
+  const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.user!.id)).limit(1);
+
   const [booking] = await db
     .insert(bookingsTable)
-    .values({ id: generateId(), userId: req.user!.id, vendorId: service.vendorId, serviceId, date, time })
+    .values({
+      id: generateId(),
+      userId: req.user!.id,
+      vendorId: service.vendorId,
+      serviceId,
+      date,
+      time,
+      customerName: customerName || user?.name,
+      customerEmail: customerEmail || user?.email,
+      customerPhone,
+      address,
+      totalAmount: totalAmount ?? service.price,
+      couponCode: couponCode || null,
+    })
     .returning();
 
   res.status(201).json(booking);
@@ -832,7 +1034,23 @@ async function adminGetVendors(req: Request, res: Response): Promise<void> {
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
   const [totalResult] = await db.select({ count: count() }).from(vendorsTable).where(whereClause);
-  const vendors = await db.select().from(vendorsTable).where(whereClause).limit(limit).offset(offset);
+
+  // Join with users to get email
+  const vendors = await db
+    .select({
+      id: vendorsTable.id,
+      userId: vendorsTable.userId,
+      businessName: vendorsTable.businessName,
+      isApproved: vendorsTable.isApproved,
+      createdAt: vendorsTable.createdAt,
+      userName: usersTable.name,
+      userEmail: usersTable.email,
+    })
+    .from(vendorsTable)
+    .leftJoin(usersTable, eq(vendorsTable.userId, usersTable.id))
+    .where(whereClause)
+    .limit(limit)
+    .offset(offset);
 
   res.json({ success: true, data: vendors, pagination: buildPagination(page, limit, totalResult?.count ?? 0) });
 }
@@ -865,7 +1083,39 @@ async function adminGetBookings(req: Request, res: Response): Promise<void> {
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
   const [totalResult] = await db.select({ count: count() }).from(bookingsTable).where(whereClause);
-  const bookings = await db.select().from(bookingsTable).where(whereClause).limit(limit).offset(offset);
+
+  const bookings = await db
+    .select({
+      id: bookingsTable.id,
+      date: bookingsTable.date,
+      time: bookingsTable.time,
+      status: bookingsTable.status,
+      paymentStatus: bookingsTable.paymentStatus,
+      address: bookingsTable.address,
+      customerName: bookingsTable.customerName,
+      customerEmail: bookingsTable.customerEmail,
+      customerPhone: bookingsTable.customerPhone,
+      totalAmount: bookingsTable.totalAmount,
+      couponCode: bookingsTable.couponCode,
+      createdAt: bookingsTable.createdAt,
+      // Customer (user) info
+      userName: usersTable.name,
+      userEmail: usersTable.email,
+      // Service info
+      serviceTitle: servicesTable.title,
+      servicePrice: servicesTable.price,
+      serviceCategory: servicesTable.category,
+      // Vendor info
+      vendorBusiness: vendorsTable.businessName,
+    })
+    .from(bookingsTable)
+    .leftJoin(usersTable, eq(bookingsTable.userId, usersTable.id))
+    .leftJoin(servicesTable, eq(bookingsTable.serviceId, servicesTable.id))
+    .leftJoin(vendorsTable, eq(bookingsTable.vendorId, vendorsTable.id))
+    .where(whereClause)
+    .orderBy(desc(bookingsTable.createdAt))
+    .limit(limit)
+    .offset(offset);
 
   res.json({ success: true, data: bookings, pagination: buildPagination(page, limit, totalResult?.count ?? 0) });
 }
@@ -890,16 +1140,43 @@ async function adminGetReports(_req: Request, res: Response): Promise<void> {
     }
   }
 
-  const paidBookings = await db
-    .select({ serviceId: bookingsTable.serviceId })
-    .from(bookingsTable)
-    .where(eq(bookingsTable.paymentStatus, "paid"));
+  // All bookings with totalAmount and createdAt for monthly breakdown
+  const allBookings = await db
+    .select({
+      totalAmount: bookingsTable.totalAmount,
+      serviceId: bookingsTable.serviceId,
+      createdAt: bookingsTable.createdAt,
+    })
+    .from(bookingsTable);
+
+  // Build monthly revenue map for the current year
+  const currentYear = new Date().getFullYear();
+  const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const monthlyMap: Record<number, { revenue: number; bookings: number }> = {};
+  for (let i = 0; i < 12; i++) monthlyMap[i] = { revenue: 0, bookings: 0 };
 
   let totalRevenue = 0;
-  for (const { serviceId } of paidBookings) {
-    const [svc] = await db.select({ price: servicesTable.price }).from(servicesTable).where(eq(servicesTable.id, serviceId)).limit(1);
-    if (svc) totalRevenue += svc.price;
+  for (const b of allBookings) {
+    const date = new Date(b.createdAt);
+    if (date.getFullYear() === currentYear) {
+      const month = date.getMonth();
+      // Use stored totalAmount, fallback to service price
+      let amount = b.totalAmount ?? 0;
+      if (!amount && b.serviceId) {
+        const [svc] = await db.select({ price: servicesTable.price }).from(servicesTable).where(eq(servicesTable.id, b.serviceId)).limit(1);
+        amount = svc?.price ?? 0;
+      }
+      monthlyMap[month].revenue += amount;
+      monthlyMap[month].bookings += 1;
+      totalRevenue += amount;
+    }
   }
+
+  const monthlyRevenue = MONTH_NAMES.map((month, i) => ({
+    month,
+    revenue: Math.round(monthlyMap[i].revenue),
+    bookings: monthlyMap[i].bookings,
+  }));
 
   res.json({
     success: true,
@@ -912,8 +1189,89 @@ async function adminGetReports(_req: Request, res: Response): Promise<void> {
       totalBookings: totalBookings?.count ?? 0,
       bookingsByStatus,
       totalRevenue,
+      monthlyRevenue,
     },
   });
+}
+
+// ── Admin Service Approval ────────────────────────────────────
+
+async function adminGetPendingServices(_req: Request, res: Response): Promise<void> {
+  const services = await db
+    .select({
+      id: servicesTable.id,
+      title: servicesTable.title,
+      description: servicesTable.description,
+      price: servicesTable.price,
+      category: servicesTable.category,
+      status: servicesTable.status,
+      rating: servicesTable.rating,
+      reviewCount: servicesTable.reviewCount,
+      createdAt: servicesTable.createdAt,
+      vendorId: servicesTable.vendorId,
+      phone: servicesTable.phone,
+      experience: servicesTable.experience,
+      licenseNo: servicesTable.licenseNo,
+      location: servicesTable.location,
+      portfolio: servicesTable.portfolio,
+      backgroundCheck: servicesTable.backgroundCheck,
+      businessName: vendorsTable.businessName,
+      vendorUserId: vendorsTable.userId,
+      vendorName: usersTable.name,
+      vendorEmail: usersTable.email,
+    })
+    .from(servicesTable)
+    .leftJoin(vendorsTable, eq(servicesTable.vendorId, vendorsTable.id))
+    .leftJoin(usersTable, eq(vendorsTable.userId, usersTable.id))
+    .orderBy(desc(servicesTable.createdAt));
+
+  res.json({ success: true, data: services });
+}
+
+async function adminApproveService(req: Request, res: Response): Promise<void> {
+  const { id } = req.params;
+  const { status } = req.body as { status: "approved" | "rejected" };
+
+  const [service] = await db.select().from(servicesTable).where(eq(servicesTable.id, id)).limit(1);
+  if (!service) {
+    res.status(404).json({ success: false, message: "Service not found" });
+    return;
+  }
+
+  const [updated] = await db
+    .update(servicesTable)
+    .set({ status })
+    .where(eq(servicesTable.id, id))
+    .returning();
+
+  res.json({ success: true, data: updated });
+}
+
+// ── Vendor: get own services with status ─────────────────────
+
+async function getVendorServices(req: AuthRequest, res: Response): Promise<void> {
+  const [vendor] = await db
+    .select()
+    .from(vendorsTable)
+    .where(eq(vendorsTable.userId, req.user!.id))
+    .limit(1);
+
+  if (!vendor) {
+    res.status(404).json({ success: false, message: "Vendor profile not found" });
+    return;
+  }
+
+  // Use raw query to ensure all columns including `images` are returned
+  const result = await pool.query(
+    `SELECT id, title, description, price, category, vendor_id as "vendorId",
+            rating, review_count as "reviewCount", status, phone, experience,
+            license_no as "licenseNo", location, portfolio, background_check as "backgroundCheck",
+            images, created_at as "createdAt"
+     FROM services WHERE vendor_id = $1 ORDER BY created_at DESC`,
+    [vendor.id]
+  );
+
+  res.json({ success: true, data: result.rows });
 }
 
 // ============================================================
@@ -948,6 +1306,23 @@ router.post(
 );
 
 router.get("/users/profile", authenticate, getUserProfile);
+
+router.post(
+  "/auth/verify-otp",
+  [
+    body("email").isEmail().normalizeEmail().withMessage("Valid email is required"),
+    body("otp").isLength({ min: 6, max: 6 }).withMessage("OTP must be 6 digits"),
+  ],
+  validate,
+  verifyOtp,
+);
+
+router.post(
+  "/auth/resend-otp",
+  [body("email").isEmail().normalizeEmail().withMessage("Valid email is required")],
+  validate,
+  resendOtp,
+);
 
 // Vendor
 router.post(
@@ -1012,6 +1387,44 @@ router.put(
 
 router.delete("/services/:id", authenticate, requireRole("vendor"), deleteService);
 
+// Vendor upload work photos for a service
+router.post("/services/:id/photos", authenticate, requireRole("vendor"), async (req: AuthRequest, res: Response): Promise<void> => {
+  const { id } = req.params;
+  const { images } = req.body as { images: string[] };
+
+  if (!images || !Array.isArray(images)) {
+    res.status(400).json({ success: false, message: "images array is required" });
+    return;
+  }
+  if (images.length > 5) {
+    res.status(400).json({ success: false, message: "Maximum 5 photos allowed per service" });
+    return;
+  }
+
+  const [vendor] = await db.select().from(vendorsTable).where(eq(vendorsTable.userId, req.user!.id)).limit(1);
+  if (!vendor) { res.status(403).json({ success: false, message: "No vendor profile" }); return; }
+
+  const [service] = await db.select().from(servicesTable)
+    .where(and(eq(servicesTable.id, id), eq(servicesTable.vendorId, vendor.id))).limit(1);
+  if (!service) { res.status(404).json({ success: false, message: "Service not found" }); return; }
+
+  const [updated] = await db.update(servicesTable)
+    .set({ images: JSON.stringify(images) })
+    .where(eq(servicesTable.id, id))
+    .returning();
+
+  res.json({ success: true, data: updated });
+});
+
+// Admin delete service (separate from vendor delete — no vendor profile check)
+router.delete("/admin/services/:id", authenticate, requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+  const [service] = await db.select().from(servicesTable).where(eq(servicesTable.id, id)).limit(1);
+  if (!service) { res.status(404).json({ success: false, message: "Service not found" }); return; }
+  await db.delete(servicesTable).where(eq(servicesTable.id, id));
+  res.json({ success: true, message: "Service deleted" });
+});
+
 // Bookings
 router.get("/bookings/my", authenticate, getMyBookings);
 
@@ -1069,6 +1482,94 @@ router.patch(
 );
 router.get("/admin/bookings", authenticate, requireRole("admin"), adminGetBookings);
 router.get("/admin/reports", authenticate, requireRole("admin"), adminGetReports);
+router.get("/admin/services", authenticate, requireRole("admin"), adminGetPendingServices);
+router.get("/admin/vendors/:id/services", authenticate, requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+  const services = await db
+    .select()
+    .from(servicesTable)
+    .where(and(eq(servicesTable.vendorId, id), eq(servicesTable.status, "approved")))
+    .orderBy(desc(servicesTable.createdAt));
+  res.json({ success: true, data: services });
+});
+router.patch(
+  "/admin/services/:id/approve",
+  authenticate,
+  requireRole("admin"),
+  [body("status").isIn(["approved", "rejected"]).withMessage("Status must be approved or rejected")],
+  validate,
+  adminApproveService,
+);
+router.get("/vendor/services", authenticate, requireRole("vendor"), getVendorServices);
+
+// Support contact
+router.post(
+  "/support/contact",
+  [
+    body("name").trim().notEmpty().withMessage("Name is required"),
+    body("email").isEmail().normalizeEmail().withMessage("Valid email is required"),
+    body("subject").trim().notEmpty().withMessage("Subject is required"),
+    body("message").trim().isLength({ min: 10 }).withMessage("Message must be at least 10 characters"),
+    body("category").trim().notEmpty().withMessage("Category is required"),
+  ],
+  validate,
+  async (req: Request, res: Response): Promise<void> => {
+    const { name, email, subject, message, category } = req.body as {
+      name: string; email: string; subject: string; message: string; category: string;
+    };
+
+    try {
+      // Email to support inbox
+      await mailer.sendMail({
+        from: `"Atelier Services Support" <${process.env.EMAIL_USER}>`,
+        to: process.env.EMAIL_USER,
+        replyTo: email,
+        subject: `[Support] [${category}] ${subject}`,
+        html: `
+          <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:32px;background:#fafafa;border-radius:12px">
+            <h2 style="margin:0 0 4px;color:#111">New Support Query</h2>
+            <p style="color:#888;font-size:13px;margin:0 0 24px">Received via Atelier Services support form</p>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:24px">
+              <tr><td style="padding:8px 0;color:#555;font-size:13px;width:100px">Name</td><td style="padding:8px 0;font-size:13px;font-weight:600">${name}</td></tr>
+              <tr><td style="padding:8px 0;color:#555;font-size:13px">Email</td><td style="padding:8px 0;font-size:13px"><a href="mailto:${email}" style="color:#6366f1">${email}</a></td></tr>
+              <tr><td style="padding:8px 0;color:#555;font-size:13px">Category</td><td style="padding:8px 0;font-size:13px">${category}</td></tr>
+              <tr><td style="padding:8px 0;color:#555;font-size:13px">Subject</td><td style="padding:8px 0;font-size:13px;font-weight:600">${subject}</td></tr>
+            </table>
+            <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px">
+              <p style="margin:0;font-size:14px;color:#111;line-height:1.7;white-space:pre-wrap">${message}</p>
+            </div>
+            <p style="color:#aaa;font-size:12px;margin-top:24px">Hit Reply to respond directly to ${email}</p>
+          </div>
+        `,
+      });
+      console.log(`[Support] Query from ${email} sent to inbox`);
+
+      // Confirmation email to user
+      await mailer.sendMail({
+        from: `"Atelier Services" <${process.env.EMAIL_USER}>`,
+        to: email,
+        subject: "We received your query — Atelier Services Support",
+        html: `
+          <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#fafafa;border-radius:12px">
+            <h2 style="margin:0 0 8px;color:#111">Hi ${name},</h2>
+            <p style="color:#555;margin:0 0 16px">Thanks for reaching out. We've received your message and will get back to you within <strong>24–48 hours</strong>.</p>
+            <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px">
+              <p style="margin:0 0 4px;font-size:12px;color:#888;text-transform:uppercase;letter-spacing:1px">Your message</p>
+              <p style="margin:0;font-size:14px;color:#111;line-height:1.7;white-space:pre-wrap">${message}</p>
+            </div>
+            <p style="color:#999;font-size:13px;margin:0">— The Atelier Services Team</p>
+          </div>
+        `,
+      });
+      console.log(`[Support] Confirmation sent to ${email}`);
+
+      res.json({ success: true, message: "Your query has been sent. We'll get back to you within 24–48 hours." });
+    } catch (err) {
+      console.error("[Support] Failed to send email:", err);
+      res.status(500).json({ success: false, message: "Failed to send your query. Please try again." });
+    }
+  },
+);
 
 // ============================================================
 // SECTION 9 — APP SETUP & SERVER START
@@ -1077,8 +1578,8 @@ router.get("/admin/reports", authenticate, requireRole("admin"), adminGetReports
 const app: Express = express();
 
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "20mb" }));
+app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
 // Request logger
 app.use((req, _res, next) => {
