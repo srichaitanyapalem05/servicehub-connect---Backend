@@ -197,6 +197,7 @@ const bookingsTable = pgTable("bookings", {
   address: text("address"),
   totalAmount: real("total_amount"),
   couponCode: text("coupon_code"),
+  completionPhotos: text("completion_photos").default("[]"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -554,46 +555,52 @@ async function getVendorBookings(req: AuthRequest, res: Response): Promise<void>
     return;
   }
 
-  const conditions: any[] = [eq(bookingsTable.vendorId, vendor.id)];
-  if (status) conditions.push(eq(bookingsTable.status, status as any));
+  const statusFilter = status ? `AND b.status = '${status}'` : "";
 
-  const [totalResult] = await db
-    .select({ count: count() })
-    .from(bookingsTable)
-    .where(and(...conditions));
+  const countResult = await pool.query(
+    `SELECT COUNT(*) FROM bookings b WHERE b.vendor_id = $1 ${statusFilter}`,
+    [vendor.id]
+  );
 
-  const bookings = await db
-    .select({
-      id: bookingsTable.id,
-      userId: bookingsTable.userId,
-      vendorId: bookingsTable.vendorId,
-      serviceId: bookingsTable.serviceId,
-      date: bookingsTable.date,
-      time: bookingsTable.time,
-      status: bookingsTable.status,
-      paymentStatus: bookingsTable.paymentStatus,
-      customerName: bookingsTable.customerName,
-      customerEmail: bookingsTable.customerEmail,
-      customerPhone: bookingsTable.customerPhone,
-      address: bookingsTable.address,
-      createdAt: bookingsTable.createdAt,
-      serviceTitle: servicesTable.title,
-      servicePrice: servicesTable.price,
-      userName: usersTable.name,
-      userEmail: usersTable.email,
-    })
-    .from(bookingsTable)
-    .leftJoin(servicesTable, eq(bookingsTable.serviceId, servicesTable.id))
-    .leftJoin(usersTable, eq(bookingsTable.userId, usersTable.id))
-    .where(and(...conditions))
-    .orderBy(desc(bookingsTable.createdAt))
-    .limit(limit)
-    .offset(offset);
+  const result = await pool.query(
+    `SELECT
+        b.id, b.date, b.time, b.status, b.payment_status as "paymentStatus",
+        b.address, b.customer_name as "customerName", b.customer_email as "customerEmail",
+        b.customer_phone as "customerPhone", b.total_amount as "totalAmount",
+        b.coupon_code as "couponCode", b.completion_photos as "completionPhotos", b.created_at as "createdAt",
+        b.user_id as "userId", b.vendor_id as "vendorId", b.service_id as "serviceId",
+        s.id as "serviceId", s.title as "serviceTitle", s.price as "servicePrice",
+        s.category as "serviceCategory", s.images as "serviceImages",
+        u.name as "userName", u.email as "userEmail"
+     FROM bookings b
+     LEFT JOIN services s ON s.id = b.service_id
+     LEFT JOIN users u ON u.id = b.user_id
+     WHERE b.vendor_id = $1 ${statusFilter}
+     ORDER BY b.created_at DESC
+     LIMIT ${limit} OFFSET ${offset}`,
+    [vendor.id]
+  );
+
+  const bookings = result.rows.map(b => ({
+    ...b,
+    total: b.totalAmount ?? b.servicePrice ?? 0,
+    serviceImage: (() => {
+      try {
+        const imgs = b.serviceImages ? JSON.parse(b.serviceImages) : [];
+        return imgs[0] || "";
+      } catch { return ""; }
+    })(),
+    completionPhotos: (() => {
+      try {
+        return b.completionPhotos ? JSON.parse(b.completionPhotos) : [];
+      } catch { return []; }
+    })(),
+  }));
 
   res.json({
     success: true,
     data: bookings,
-    pagination: buildPagination(page, limit, totalResult?.count ?? 0),
+    pagination: buildPagination(page, limit, Number(countResult.rows[0]?.count ?? 0)),
   });
 }
 
@@ -658,19 +665,21 @@ async function getServices(req: Request, res: Response): Promise<void> {
 
   const [totalResult] = await db.select({ count: count() }).from(servicesTable).where(whereClause);
   const services = await pool.query(
-    `SELECT id, title, description, price, category,
-            vendor_id as "vendorId", rating, review_count as "reviewCount",
-            status, phone, experience, license_no as "licenseNo",
-            location, portfolio, background_check as "backgroundCheck",
-            images, created_at as "createdAt"
-     FROM services
-     WHERE status = 'approved'
-     ${category ? `AND category = '${category.replace(/'/g, "''")}'` : ""}
-     ${search ? `AND title ILIKE '%${search.replace(/'/g, "''")}%'` : ""}
-     ${minPrice ? `AND price >= ${Number(minPrice)}` : ""}
-     ${maxPrice ? `AND price <= ${Number(maxPrice)}` : ""}
-     ${minRating ? `AND rating >= ${Number(minRating)}` : ""}
-     ORDER BY ${sortBy === "price" ? "price" : sortBy === "rating" ? "rating" : "created_at"} ${sortOrder === "asc" ? "ASC" : "DESC"}
+    `SELECT s.id, s.title, s.description, s.price, s.category,
+            s.vendor_id as "vendorId", s.rating, s.review_count as "reviewCount",
+            s.status, s.phone, s.experience, s.license_no as "licenseNo",
+            s.location, s.portfolio, s.background_check as "backgroundCheck",
+            s.images, s.created_at as "createdAt",
+            v.business_name as "vendorName"
+     FROM services s
+     LEFT JOIN vendors v ON v.id = s.vendor_id
+     WHERE s.status = 'approved'
+     ${category ? `AND s.category = '${category.replace(/'/g, "''")}'` : ""}
+     ${search ? `AND s.title ILIKE '%${search.replace(/'/g, "''")}%'` : ""}
+     ${minPrice ? `AND s.price >= ${Number(minPrice)}` : ""}
+     ${maxPrice ? `AND s.price <= ${Number(maxPrice)}` : ""}
+     ${minRating ? `AND s.rating >= ${Number(minRating)}` : ""}
+     ORDER BY ${sortBy === "price" ? "s.price" : sortBy === "rating" ? "s.rating" : "s.created_at"} ${sortOrder === "asc" ? "ASC" : "DESC"}
      LIMIT ${limit} OFFSET ${offset}`
   );
 
@@ -862,22 +871,53 @@ async function getMyBookings(req: AuthRequest, res: Response): Promise<void> {
   const { status } = req.query as { status?: string };
   const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
 
-  const conditions: any[] = [eq(bookingsTable.userId, req.user!.id)];
-  if (status) conditions.push(eq(bookingsTable.status, status as any));
+  const userId = req.user!.id;
+  const statusFilter = status ? `AND b.status = '${status}'` : "";
 
-  const [totalResult] = await db
-    .select({ count: count() })
-    .from(bookingsTable)
-    .where(and(...conditions));
+  const countResult = await pool.query(
+    `SELECT COUNT(*) FROM bookings b WHERE b.user_id = $1 ${statusFilter}`,
+    [userId]
+  );
 
-  const bookings = await db
-    .select()
-    .from(bookingsTable)
-    .where(and(...conditions))
-    .limit(limit)
-    .offset(offset);
+  const result = await pool.query(
+    `SELECT
+        b.id, b.date, b.time, b.status, b.payment_status as "paymentStatus",
+        b.address, b.customer_name as "customerName", b.customer_email as "customerEmail",
+        b.customer_phone as "customerPhone", b.total_amount as "totalAmount",
+        b.coupon_code as "couponCode", b.completion_photos as "completionPhotos", b.created_at as "createdAt",
+        s.id as "serviceId", s.title as "serviceTitle", s.price as "servicePrice",
+        s.category as "serviceCategory", s.images as "serviceImages",
+        v.business_name as "vendorName", v.id as "vendorId"
+     FROM bookings b
+     LEFT JOIN services s ON s.id = b.service_id
+     LEFT JOIN vendors v ON v.id = b.vendor_id
+     WHERE b.user_id = $1 ${statusFilter}
+     ORDER BY b.created_at DESC
+     LIMIT ${limit} OFFSET ${offset}`,
+    [userId]
+  );
 
-  res.json({ success: true, data: bookings, pagination: buildPagination(page, limit, totalResult?.count ?? 0) });
+  const bookings = result.rows.map(b => ({
+    ...b,
+    total: b.totalAmount ?? b.servicePrice ?? 0,
+    serviceImage: (() => {
+      try {
+        const imgs = b.serviceImages ? JSON.parse(b.serviceImages) : [];
+        return imgs[0] || "";
+      } catch { return ""; }
+    })(),
+    completionPhotos: (() => {
+      try {
+        return b.completionPhotos ? JSON.parse(b.completionPhotos) : [];
+      } catch { return []; }
+    })(),
+  }));
+
+  res.json({
+    success: true,
+    data: bookings,
+    pagination: buildPagination(page, limit, Number(countResult.rows[0]?.count ?? 0)),
+  });
 }
 
 // ── Reviews ───────────────────────────────────────────────────
@@ -1097,6 +1137,7 @@ async function adminGetBookings(req: Request, res: Response): Promise<void> {
       customerPhone: bookingsTable.customerPhone,
       totalAmount: bookingsTable.totalAmount,
       couponCode: bookingsTable.couponCode,
+      completionPhotos: bookingsTable.completionPhotos,
       createdAt: bookingsTable.createdAt,
       // Customer (user) info
       userName: usersTable.name,
@@ -1105,6 +1146,7 @@ async function adminGetBookings(req: Request, res: Response): Promise<void> {
       serviceTitle: servicesTable.title,
       servicePrice: servicesTable.price,
       serviceCategory: servicesTable.category,
+      serviceImages: servicesTable.images,
       // Vendor info
       vendorBusiness: vendorsTable.businessName,
     })
@@ -1117,7 +1159,12 @@ async function adminGetBookings(req: Request, res: Response): Promise<void> {
     .limit(limit)
     .offset(offset);
 
-  res.json({ success: true, data: bookings, pagination: buildPagination(page, limit, totalResult?.count ?? 0) });
+  const mapped = bookings.map(b => ({
+    ...b,
+    serviceImage: (() => { try { const imgs = b.serviceImages ? JSON.parse(b.serviceImages) : []; return imgs[0] || ""; } catch { return ""; } })(),
+  }));
+
+  res.json({ success: true, data: mapped, pagination: buildPagination(page, limit, totalResult?.count ?? 0) });
 }
 
 async function adminGetReports(_req: Request, res: Response): Promise<void> {
@@ -1215,6 +1262,7 @@ async function adminGetPendingServices(_req: Request, res: Response): Promise<vo
       location: servicesTable.location,
       portfolio: servicesTable.portfolio,
       backgroundCheck: servicesTable.backgroundCheck,
+      images: servicesTable.images,
       businessName: vendorsTable.businessName,
       vendorUserId: vendorsTable.userId,
       vendorName: usersTable.name,
@@ -1356,6 +1404,44 @@ router.patch(
   [body("status").isIn(["confirmed", "completed", "cancelled"]).withMessage("Invalid status")],
   validate,
   updateVendorBooking,
+);
+
+// Vendor upload completion photos for a booking
+router.post(
+  "/vendor/bookings/:id/photos",
+  authenticate,
+  requireRole("vendor"),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    const { id } = req.params;
+    const { images } = req.body as { images: string[] };
+
+    if (!images || !Array.isArray(images) || images.length === 0) {
+      res.status(400).json({ success: false, message: "images array is required" });
+      return;
+    }
+    if (images.length > 5) {
+      res.status(400).json({ success: false, message: "Maximum 5 photos allowed" });
+      return;
+    }
+
+    const [vendor] = await db.select().from(vendorsTable).where(eq(vendorsTable.userId, req.user!.id)).limit(1);
+    if (!vendor) { res.status(403).json({ success: false, message: "No vendor profile" }); return; }
+
+    const [booking] = await db
+      .select()
+      .from(bookingsTable)
+      .where(and(eq(bookingsTable.id, id), eq(bookingsTable.vendorId, vendor.id)))
+      .limit(1);
+    if (!booking) { res.status(404).json({ success: false, message: "Booking not found" }); return; }
+
+    const [updated] = await db
+      .update(bookingsTable)
+      .set({ completionPhotos: JSON.stringify(images) })
+      .where(eq(bookingsTable.id, id))
+      .returning();
+
+    res.json({ success: true, data: updated });
+  },
 );
 
 // Services
