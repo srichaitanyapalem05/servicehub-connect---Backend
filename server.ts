@@ -1350,6 +1350,25 @@ const router = Router();
 // Health
 router.get("/healthz", (_req, res) => res.json({ status: "ok" }));
 
+// Debug database connection
+router.get("/debug/db", async (_req, res) => {
+  try {
+    const client = await pool.connect();
+    const result = await client.query("SELECT 1 as connected");
+    client.release();
+    const tables = await pool.query(
+      "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+    );
+    res.json({
+      connected: true,
+      tables: tables.rows.map((r: any) => r.table_name),
+      env: { NODE_ENV: process.env.NODE_ENV, hasDB: !!process.env.DATABASE_URL },
+    });
+  } catch (err: any) {
+    res.json({ connected: false, error: err.message, code: err.code });
+  }
+});
+
 // Auth
 router.post(
   "/auth/register",
