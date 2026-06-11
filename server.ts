@@ -1698,7 +1698,7 @@ app.use("/api", router);
 app.use(errorHandler);
 
 // SPA fallback — serve index.html for all non-API routes
-app.get("*", (req, res) => {
+app.get("/{*path}", (req, res) => {
   if (!req.path.startsWith("/api")) {
     const indexPath = path.join(publicDir, "index.html");
     res.sendFile(indexPath, (err) => {
