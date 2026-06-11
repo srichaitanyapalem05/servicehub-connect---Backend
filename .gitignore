@@ -47,3 +47,14 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Environment variables - never commit these
+.env
+.env.*
+!.env.example
+
+# Debug/temp files
+debug_server.mjs
+run_server.sh
+run_and_capture.sh
+/public
