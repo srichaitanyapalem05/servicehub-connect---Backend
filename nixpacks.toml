@@ -1,8 +1,5 @@
 [phases.install]
-cmds = ["npm install -g pnpm", "pnpm install"]
-
-[phases.build]
-cmds = []
+cmds = ["npm install"]
 
 [start]
 cmd = "npx tsx server.ts"

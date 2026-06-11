@@ -2,15 +2,10 @@
   "name": "workspace",
   "version": "0.0.0",
   "license": "MIT",
-  "pnpm": {
-    "overrides": {
-      "esbuild": "0.27.7"
-    }
-  },
   "scripts": {
-    "build:frontend": "npm --prefix ../servicehub-connect install && npm --prefix ../servicehub-connect run build && rm -rf public && cp -r ../servicehub-connect/dist public",
-    "build": "npm run build:frontend",
-    "start": "npx tsx server.ts"
+    "start": "npx tsx server.ts",
+    "dev": "npx tsx server.ts",
+    "build": "echo 'build done'"
   },
   "private": true,
   "devDependencies": {
@@ -20,8 +15,6 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/nodemailer": "^8.0.0",
     "@types/pg": "^8.20.0",
-    "drizzle-kit": "^0.31.10",
-    "prettier": "^3.8.1",
     "tsx": "^4.21.0",
     "typescript": "~5.9.2"
   },
