@@ -220,3 +220,39 @@ export async function updateVendorBooking(req: AuthRequest, res: Response): Prom
 
   res.json(updated);
 }
+
+export async function uploadCompletionPhotos(req: AuthRequest, res: Response): Promise<void> {
+  const { id } = req.params;
+  const { images } = req.body as { images: string[] };
+
+  if (!images || !Array.isArray(images) || images.length === 0) {
+    res.status(400).json({ success: false, message: "images array is required" });
+    return;
+  }
+  if (images.length > 5) {
+    res.status(400).json({ success: false, message: "Maximum 5 photos allowed" });
+    return;
+  }
+
+  const [vendor] = await db
+    .select()
+    .from(vendorsTable)
+    .where(eq(vendorsTable.userId, req.user!.id))
+    .limit(1);
+  if (!vendor) { res.status(403).json({ success: false, message: "No vendor profile" }); return; }
+
+  const [booking] = await db
+    .select()
+    .from(bookingsTable)
+    .where(and(eq(bookingsTable.id, id), eq(bookingsTable.vendorId, vendor.id)))
+    .limit(1);
+  if (!booking) { res.status(404).json({ success: false, message: "Booking not found" }); return; }
+
+  const [updated] = await db
+    .update(bookingsTable)
+    .set({ completionPhotos: JSON.stringify(images) })
+    .where(eq(bookingsTable.id, id))
+    .returning();
+
+  res.json({ success: true, data: updated });
+}

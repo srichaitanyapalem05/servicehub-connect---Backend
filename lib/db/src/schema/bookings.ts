@@ -32,6 +32,7 @@ export const bookingsTable = pgTable("bookings", {
   time: text("time").notNull(),
   status: bookingStatusEnum("status").notNull().default("pending"),
   paymentStatus: paymentStatusEnum("payment_status").notNull().default("unpaid"),
+  completionPhotos: text("completion_photos").default("[]"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

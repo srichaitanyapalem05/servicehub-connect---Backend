@@ -8,11 +8,9 @@
     }
   },
   "scripts": {
-    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
-    "start": "node --env-file=.env node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/cli.cjs server.ts",
-    "build": "pnpm run typecheck && pnpm -r --if-present run build",
-    "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "build:frontend": "npm --prefix ../servicehub-connect install && npm --prefix ../servicehub-connect run build && rm -rf public && cp -r ../servicehub-connect/dist public",
+    "build": "npm run build:frontend",
+    "start": "npx tsx server.ts"
   },
   "private": true,
   "devDependencies": {

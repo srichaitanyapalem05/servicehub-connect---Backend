@@ -6,6 +6,7 @@ import {
   getVendorDashboard,
   getVendorBookings,
   updateVendorBooking,
+  uploadCompletionPhotos,
 } from "../controllers/vendor.controller.js";
 import { authenticate, requireRole } from "../middlewares/auth.js";
 import { validate } from "../middlewares/validate.js";
@@ -45,6 +46,13 @@ router.patch(
   [body("status").isIn(["confirmed", "completed", "cancelled"]).withMessage("Invalid status")],
   validate,
   updateVendorBooking,
+);
+
+router.post(
+  "/vendor/bookings/:id/photos",
+  authenticate,
+  requireRole("vendor"),
+  uploadCompletionPhotos,
 );
 
 export default router;

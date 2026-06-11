@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from "crypto";
+import path from "path";
 import express, {
   type Express,
   type Request,
@@ -172,6 +173,8 @@ const servicesTable = pgTable("services", {
   portfolio: text("portfolio"),
   backgroundCheck: boolean("background_check").default(false),
   images: text("images").default("[]"),
+  lat: real("lat"),
+  lng: real("lng"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -645,6 +648,7 @@ async function getServices(req: Request, res: Response): Promise<void> {
   const {
     category, minPrice, maxPrice, minRating, search,
     sortBy = "createdAt", sortOrder = "desc",
+    lat, lng, radius,
   } = req.query as Record<string, string | undefined>;
 
   const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
@@ -657,11 +661,15 @@ async function getServices(req: Request, res: Response): Promise<void> {
   if (search) conditions.push(ilike(servicesTable.title, `%${search}%`));
 
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
-  const sortColumn =
-    sortBy === "price" ? servicesTable.price
-    : sortBy === "rating" ? servicesTable.rating
-    : servicesTable.createdAt;
-  const orderFn = sortOrder === "asc" ? asc : desc;
+
+  // If lat/lng/radius provided, use Haversine distance filtering
+  const useGeo = lat && lng && radius;
+  const distanceSelect = useGeo
+    ? `, CASE WHEN s.lat IS NOT NULL AND s.lng IS NOT NULL THEN (6371 * acos(LEAST(1.0, cos(radians(${Number(lat)})) * cos(radians(s.lat)) * cos(radians(s.lng) - radians(${Number(lng)})) + sin(radians(${Number(lat)})) * sin(radians(s.lat))))) ELSE NULL END AS distance`
+    : ", NULL AS distance";
+  const geoFilter = useGeo
+    ? `AND (s.lat IS NULL OR s.lng IS NULL OR (6371 * acos(LEAST(1.0, cos(radians(${Number(lat)})) * cos(radians(s.lat)) * cos(radians(s.lng) - radians(${Number(lng)})) + sin(radians(${Number(lat)})) * sin(radians(s.lat))))) <= ${Number(radius)})`
+    : "";
 
   const [totalResult] = await db.select({ count: count() }).from(servicesTable).where(whereClause);
   const services = await pool.query(
@@ -669,8 +677,9 @@ async function getServices(req: Request, res: Response): Promise<void> {
             s.vendor_id as "vendorId", s.rating, s.review_count as "reviewCount",
             s.status, s.phone, s.experience, s.license_no as "licenseNo",
             s.location, s.portfolio, s.background_check as "backgroundCheck",
-            s.images, s.created_at as "createdAt",
+            s.images, s.lat, s.lng, s.created_at as "createdAt",
             v.business_name as "vendorName"
+            ${distanceSelect}
      FROM services s
      LEFT JOIN vendors v ON v.id = s.vendor_id
      WHERE s.status = 'approved'
@@ -679,7 +688,8 @@ async function getServices(req: Request, res: Response): Promise<void> {
      ${minPrice ? `AND s.price >= ${Number(minPrice)}` : ""}
      ${maxPrice ? `AND s.price <= ${Number(maxPrice)}` : ""}
      ${minRating ? `AND s.rating >= ${Number(minRating)}` : ""}
-     ORDER BY ${sortBy === "price" ? "s.price" : sortBy === "rating" ? "s.rating" : "s.created_at"} ${sortOrder === "asc" ? "ASC" : "DESC"}
+     ${useGeo ? geoFilter : ""}
+     ORDER BY ${useGeo ? "distance ASC NULLS LAST" : sortBy === "price" ? "s.price" : sortBy === "rating" ? "s.rating" : "s.created_at"} ${useGeo ? "" : sortOrder === "asc" ? "ASC" : "DESC"}
      LIMIT ${limit} OFFSET ${offset}`
   );
 
@@ -715,11 +725,11 @@ async function getServiceById(req: Request, res: Response): Promise<void> {
 }
 
 async function createService(req: AuthRequest, res: Response): Promise<void> {
-  const { title, description, price, category, phone, experience, licenseNo, location, portfolio, backgroundCheck, images } = req.body as {
+  const { title, description, price, category, phone, experience, licenseNo, location, portfolio, backgroundCheck, images, lat, lng } = req.body as {
     title: string; description: string; price: number; category: string;
     phone?: string; experience?: number; licenseNo?: string;
     location?: string; portfolio?: string; backgroundCheck?: boolean;
-    images?: string[];
+    images?: string[]; lat?: number; lng?: number;
   };
 
   const [vendor] = await db
@@ -740,6 +750,8 @@ async function createService(req: AuthRequest, res: Response): Promise<void> {
       vendorId: vendor.id, phone, experience, licenseNo,
       location, portfolio, backgroundCheck: backgroundCheck ?? false,
       images: JSON.stringify(images ?? []),
+      lat: lat ?? null,
+      lng: lng ?? null,
     })
     .returning();
 
@@ -748,7 +760,7 @@ async function createService(req: AuthRequest, res: Response): Promise<void> {
 
 async function updateService(req: AuthRequest, res: Response): Promise<void> {
   const { id } = req.params;
-  const { title, description, price, category, phone, experience, licenseNo, location, portfolio, backgroundCheck, images } = req.body as Record<string, any>;
+  const { title, description, price, category, phone, experience, licenseNo, location, portfolio, backgroundCheck, images, lat, lng } = req.body as Record<string, any>;
 
   const [vendor] = await db
     .select()
@@ -784,6 +796,8 @@ async function updateService(req: AuthRequest, res: Response): Promise<void> {
   if (portfolio !== undefined) updates.portfolio = portfolio;
   if (backgroundCheck !== undefined) updates.backgroundCheck = backgroundCheck;
   if (images !== undefined) updates.images = JSON.stringify(images);
+  if (lat !== undefined) updates.lat = lat;
+  if (lng !== undefined) updates.lng = lng;
 
   const [updated] = await db
     .update(servicesTable)
@@ -1663,7 +1677,10 @@ router.post(
 
 const app: Express = express();
 
-app.use(cors());
+app.use(cors({
+  origin: process.env.FRONTEND_URL ? [process.env.FRONTEND_URL, "http://localhost:8080"] : "*",
+  credentials: true,
+}));
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
@@ -1673,12 +1690,81 @@ app.use((req, _res, next) => {
   next();
 });
 
+// Serve built frontend in production
+const publicDir = path.join(process.cwd(), "public");
+app.use(express.static(publicDir));
+
 app.use("/api", router);
 app.use(errorHandler);
 
+// SPA fallback — serve index.html for all non-API routes
+app.get("*", (req, res) => {
+  if (!req.path.startsWith("/api")) {
+    const indexPath = path.join(publicDir, "index.html");
+    res.sendFile(indexPath, (err) => {
+      if (err) res.status(404).json({ success: false, message: "Not found" });
+    });
+  }
+});
+
 const PORT = Number(process.env.PORT ?? 3000);
 
-app.listen(PORT, () => {
+async function initSchema() {
+  try {
+    await pool.query(`
+      CREATE TYPE IF NOT EXISTS role AS ENUM ('customer', 'vendor', 'admin');
+      CREATE TYPE IF NOT EXISTS booking_status AS ENUM ('pending', 'confirmed', 'completed', 'cancelled');
+      CREATE TYPE IF NOT EXISTS payment_status AS ENUM ('unpaid', 'paid');
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
+        password TEXT NOT NULL, role role NOT NULL DEFAULT 'customer',
+        created_at TIMESTAMP DEFAULT NOW() NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS vendors (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        business_name TEXT NOT NULL, is_approved BOOLEAN NOT NULL DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW() NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS services (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
+        price REAL NOT NULL, category TEXT NOT NULL,
+        vendor_id TEXT NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+        rating REAL NOT NULL DEFAULT 0, review_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        phone TEXT, experience INTEGER DEFAULT 0, license_no TEXT,
+        location TEXT, portfolio TEXT, background_check BOOLEAN DEFAULT false,
+        images TEXT DEFAULT '[]', lat REAL, lng REAL,
+        created_at TIMESTAMP DEFAULT NOW() NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS bookings (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        vendor_id TEXT NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+        service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+        date TEXT NOT NULL, time TEXT NOT NULL,
+        status booking_status NOT NULL DEFAULT 'pending',
+        payment_status payment_status NOT NULL DEFAULT 'unpaid',
+        customer_name TEXT, customer_email TEXT, customer_phone TEXT,
+        address TEXT, total_amount REAL, coupon_code TEXT,
+        completion_photos TEXT DEFAULT '[]',
+        created_at TIMESTAMP DEFAULT NOW() NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS reviews (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+        rating REAL NOT NULL, comment TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW() NOT NULL
+      );
+    `);
+    console.log("[DB] Schema initialized");
+  } catch (err) {
+    console.error("[DB] Schema init error:", err);
+  }
+}
+
+app.listen(PORT, async () => {
+  await initSchema();
   console.log(`\n🚀 Multi-Vendor Service Booking Platform`);
   console.log(`   Server running on port ${PORT}`);
   console.log(`   Health check: http://localhost:${PORT}/api/healthz\n`);

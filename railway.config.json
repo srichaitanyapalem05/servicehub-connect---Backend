@@ -1,0 +1,11 @@
+{
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "pnpm install"
+  },
+  "deploy": {
+    "startCommand": "node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/cli.cjs server.ts",
+    "healthcheckPath": "/api/healthz",
+    "restartPolicyType": "ON_FAILURE"
+  }
+}

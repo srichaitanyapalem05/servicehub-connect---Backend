@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: servicehub-backend
+    runtime: node
+    buildCommand: pnpm install --frozen-lockfile
+    startCommand: node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/cli.cjs server.ts
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: PORT
+        value: 3000
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASS
+        sync: false
+      - key: NODE_ENV
+        value: production
