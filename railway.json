@@ -2,10 +2,10 @@
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
     "builder": "NIXPACKS",
-    "buildCommand": "npx pnpm install"
+    "buildCommand": "npm install"
   },
   "deploy": {
-    "startCommand": "npx tsx server.ts",
+    "startCommand": "npm start",
     "healthcheckPath": "/api/healthz",
     "restartPolicyType": "ON_FAILURE"
   }
