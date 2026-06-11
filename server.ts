@@ -1711,11 +1711,14 @@ const PORT = Number(process.env.PORT ?? 3000);
 
 async function initSchema() {
   try {
-    await pool.query(`
-      CREATE TYPE IF NOT EXISTS role AS ENUM ('customer', 'vendor', 'admin');
-      CREATE TYPE IF NOT EXISTS booking_status AS ENUM ('pending', 'confirmed', 'completed', 'cancelled');
-      CREATE TYPE IF NOT EXISTS payment_status AS ENUM ('unpaid', 'paid');
-    `);
+    // Create enums (IF NOT EXISTS requires PG 14+)
+    for (const def of [
+      `CREATE TYPE role AS ENUM ('customer', 'vendor', 'admin')`,
+      `CREATE TYPE booking_status AS ENUM ('pending', 'confirmed', 'completed', 'cancelled')`,
+      `CREATE TYPE payment_status AS ENUM ('unpaid', 'paid')`,
+    ]) {
+      try { await pool.query(def); } catch { /* type already exists */ }
+    }
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
