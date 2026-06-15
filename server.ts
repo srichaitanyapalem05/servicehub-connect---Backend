@@ -1790,6 +1790,30 @@ async function initSchema() {
         created_at TIMESTAMP DEFAULT NOW() NOT NULL
       );
     `);
+    // Seed admin user from env vars if configured
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminPassword = process.env.ADMIN_PASSWORD;
+    const adminName = process.env.ADMIN_NAME;
+    if (adminEmail && adminPassword) {
+      const [existing] = await db.select().from(usersTable).where(eq(usersTable.email, adminEmail)).limit(1);
+      if (!existing) {
+        const hashed = await bcrypt.hash(adminPassword, 12);
+        await db.insert(usersTable).values({
+          id: generateId(),
+          name: adminName || "Admin",
+          email: adminEmail,
+          password: hashed,
+          role: "admin",
+        });
+        console.log(`[DB] Admin user created: ${adminEmail}`);
+      } else if (existing.role !== "admin") {
+        await db.update(usersTable).set({ role: "admin" }).where(eq(usersTable.email, adminEmail));
+        console.log(`[DB] User ${adminEmail} promoted to admin`);
+      } else {
+        console.log(`[DB] Admin user already exists: ${adminEmail}`);
+      }
+    }
+
     console.log("[DB] Schema initialized");
   } catch (err) {
     console.error("[DB] Schema init error:", err);
