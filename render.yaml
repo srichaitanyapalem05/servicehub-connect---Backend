@@ -19,3 +19,13 @@ services:
         value: production
       - key: NODE_VERSION
         value: 20
+      - key: BYPASS_OTP
+        value: "true"
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_NAME
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
