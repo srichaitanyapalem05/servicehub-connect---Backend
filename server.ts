@@ -100,6 +100,10 @@ function generateOtp(): string {
 }
 
 async function sendOtpEmail(to: string, otp: string, name: string): Promise<void> {
+  if (process.env.BYPASS_OTP === "true") {
+    console.log(`\n[OTP] BYPASS MODE — OTP for ${to} (${name}): ${otp}\n`);
+    return;
+  }
   try {
     await mailer.sendMail({
       from: `"Atelier Services" <${process.env.EMAIL_USER}>`,
@@ -119,7 +123,9 @@ async function sendOtpEmail(to: string, otp: string, name: string): Promise<void
     console.log(`[OTP] Email sent to ${to}`);
   } catch (err) {
     console.error(`[OTP] Failed to send email to ${to}:`, err);
-    throw new Error("Failed to send OTP email. Please try again.");
+    if (process.env.BYPASS_OTP !== "true") {
+      throw new Error("Failed to send OTP email. Please try again.");
+    }
   }
 }
 
