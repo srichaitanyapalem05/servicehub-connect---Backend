@@ -20,7 +20,7 @@ services:
       - key: NODE_VERSION
         value: 20
       - key: BYPASS_OTP
-        value: "true"
+        value: "false"
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD

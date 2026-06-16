@@ -106,13 +106,19 @@ async function deleteOtp(email: string) {
 // Nodemailer transporter
 const mailer = nodemailer.createTransport({
   service: "gmail",
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 15000,
+  connectionTimeout: 15000,
+  greetingTimeout: 15000,
+  socketTimeout: 20000,
+  tls: {
+    rejectUnauthorized: false,
+  },
 });
 
 function generateOtp(): string {
@@ -366,7 +372,16 @@ async function registerCustomer(req: Request, res: Response): Promise<void> {
 
   await saveOtp(email, { otp, expiresAt, name, password: hashed, role: "customer" });
 
-  await sendOtpEmail(email, otp, name);
+  try {
+    await sendOtpEmail(email, otp, name);
+  } catch (err) {
+    await deleteOtp(email);
+    res.status(500).json({
+      success: false,
+      message: "Failed to send OTP email. Please check that EMAIL_USER and EMAIL_PASS are configured correctly, then try again.",
+    });
+    return;
+  }
 
   res.status(200).json({
     success: true,
@@ -474,7 +489,16 @@ async function resendOtp(req: Request, res: Response): Promise<void> {
   entry.expiresAt = Date.now() + 10 * 60 * 1000;
   await saveOtp(email, entry);
 
-  await sendOtpEmail(email, otp, entry.name);
+  try {
+    await sendOtpEmail(email, otp, entry.name);
+  } catch (err) {
+    await deleteOtp(email);
+    res.status(500).json({
+      success: false,
+      message: "Failed to send OTP email. Please check that EMAIL_USER and EMAIL_PASS are configured correctly, then try again.",
+    });
+    return;
+  }
 
   res.json({ success: true, message: "A new OTP has been sent to your email." });
 }
@@ -498,7 +522,16 @@ async function registerVendor(req: Request, res: Response): Promise<void> {
 
   await saveOtp(email, { otp, expiresAt, name, password: hashed, role: "vendor", businessName });
 
-  await sendOtpEmail(email, otp, name);
+  try {
+    await sendOtpEmail(email, otp, name);
+  } catch (err) {
+    await deleteOtp(email);
+    res.status(500).json({
+      success: false,
+      message: "Failed to send OTP email. Please check that EMAIL_USER and EMAIL_PASS are configured correctly, then try again.",
+    });
+    return;
+  }
 
   res.status(200).json({
     success: true,
