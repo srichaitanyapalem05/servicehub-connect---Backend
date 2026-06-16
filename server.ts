@@ -103,23 +103,33 @@ async function deleteOtp(email: string) {
   await pool.query(`DELETE FROM otp_store WHERE email = $1`, [email]);
 }
 
-// Nodemailer transporter
-const mailer = nodemailer.createTransport({
-  service: "gmail",
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-  connectionTimeout: 15000,
-  greetingTimeout: 15000,
-  socketTimeout: 20000,
-  tls: {
-    rejectUnauthorized: false,
-  },
-});
+// Nodemailer transporter — uses Resend in production, Gmail locally
+const mailer = nodemailer.createTransport(
+  process.env.RESEND_API_KEY
+    ? {
+        host: "smtp.resend.com",
+        port: 465,
+        secure: true,
+        auth: {
+          user: "resend",
+          pass: process.env.RESEND_API_KEY,
+        },
+      }
+    : {
+        service: "gmail",
+        host: "smtp.gmail.com",
+        port: 587,
+        secure: false,
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS,
+        },
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 20000,
+        tls: { rejectUnauthorized: false },
+      }
+);
 
 function generateOtp(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -132,7 +142,9 @@ async function sendOtpEmail(to: string, otp: string, name: string): Promise<void
   }
   try {
     await mailer.sendMail({
-      from: `"Atelier Services" <${process.env.EMAIL_USER}>`,
+      from: process.env.RESEND_API_KEY
+        ? `"Atelier Services" <onboarding@resend.dev>`
+        : `"Atelier Services" <${process.env.EMAIL_USER}>`,
       to,
       subject: "Your Atelier Services verification code",
       html: `
