@@ -1720,21 +1720,24 @@ app.use((req, _res, next) => {
   next();
 });
 
-// Serve built frontend in production
-const publicDir = path.join(process.cwd(), "public");
-app.use(express.static(publicDir));
-
+// API routes FIRST — before static files
 app.use("/api", router);
 app.use(errorHandler);
 
+// Serve built frontend in production (only when public/ exists)
+const publicDir = path.join(process.cwd(), "public");
+app.use(express.static(publicDir));
+
 // SPA fallback — serve index.html for all non-API routes
 app.get("/{*path}", (req, res) => {
-  if (!req.path.startsWith("/api")) {
-    const indexPath = path.join(publicDir, "index.html");
-    res.sendFile(indexPath, (err) => {
-      if (err) res.status(404).json({ success: false, message: "Not found" });
-    });
+  if (req.path.startsWith("/api")) {
+    res.status(404).json({ success: false, message: "API route not found" });
+    return;
   }
+  const indexPath = path.join(publicDir, "index.html");
+  res.sendFile(indexPath, (err) => {
+    if (err) res.status(404).json({ success: false, message: "Not found" });
+  });
 });
 
 const PORT = Number(process.env.PORT ?? 3000);
