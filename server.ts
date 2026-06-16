@@ -72,16 +72,36 @@ const db = drizzle(pool);
 // SECTION 1B — EMAIL & OTP SETUP
 // ============================================================
 
-// In-memory OTP store: email → { otp, expiresAt, name, password, role, businessName? }
-interface OtpEntry {
-  otp: string;
-  expiresAt: number;
-  name: string;
-  password: string; // already hashed
-  role: "customer" | "vendor";
-  businessName?: string;
+// OTP stored in DB (not memory) to survive server restarts
+async function saveOtp(email: string, entry: { otp: string; expiresAt: number; name: string; password: string; role: "customer" | "vendor"; businessName?: string }) {
+  await pool.query(
+    `INSERT INTO otp_store (email, otp, expires_at, name, password, role, business_name)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (email) DO UPDATE SET
+       otp = EXCLUDED.otp, expires_at = EXCLUDED.expires_at,
+       name = EXCLUDED.name, password = EXCLUDED.password,
+       role = EXCLUDED.role, business_name = EXCLUDED.business_name`,
+    [email, entry.otp, entry.expiresAt, entry.name, entry.password, entry.role, entry.businessName || null]
+  );
 }
-const otpStore = new Map<string, OtpEntry>();
+
+async function getOtp(email: string) {
+  const result = await pool.query(`SELECT * FROM otp_store WHERE email = $1`, [email]);
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return {
+    otp: row.otp,
+    expiresAt: Number(row.expires_at),
+    name: row.name,
+    password: row.password,
+    role: row.role as "customer" | "vendor",
+    businessName: row.business_name,
+  };
+}
+
+async function deleteOtp(email: string) {
+  await pool.query(`DELETE FROM otp_store WHERE email = $1`, [email]);
+}
 
 // Nodemailer transporter
 const mailer = nodemailer.createTransport({
@@ -344,7 +364,7 @@ async function registerCustomer(req: Request, res: Response): Promise<void> {
   const otp = generateOtp();
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-  otpStore.set(email, { otp, expiresAt, name, password: hashed, role: "customer" });
+  await saveOtp(email, { otp, expiresAt, name, password: hashed, role: "customer" });
 
   await sendOtpEmail(email, otp, name);
 
@@ -394,7 +414,7 @@ async function getUserProfile(req: AuthRequest, res: Response): Promise<void> {
 async function verifyOtp(req: Request, res: Response): Promise<void> {
   const { email, otp } = req.body as { email: string; otp: string };
 
-  const entry = otpStore.get(email);
+  const entry = await getOtp(email);
 
   if (!entry) {
     res.status(400).json({ success: false, message: "No OTP found for this email. Please register again." });
@@ -402,7 +422,7 @@ async function verifyOtp(req: Request, res: Response): Promise<void> {
   }
 
   if (Date.now() > entry.expiresAt) {
-    otpStore.delete(email);
+    await deleteOtp(email);
     res.status(400).json({ success: false, message: "OTP has expired. Please register again." });
     return;
   }
@@ -429,7 +449,7 @@ async function verifyOtp(req: Request, res: Response): Promise<void> {
     vendor = { id: v.id, businessName: v.businessName, isApproved: v.isApproved };
   }
 
-  otpStore.delete(email);
+  await deleteOtp(email);
 
   const token = generateToken({ id: user.id, role: user.role, email: user.email });
   res.status(201).json({
@@ -443,7 +463,7 @@ async function verifyOtp(req: Request, res: Response): Promise<void> {
 async function resendOtp(req: Request, res: Response): Promise<void> {
   const { email } = req.body as { email: string };
 
-  const entry = otpStore.get(email);
+  const entry = await getOtp(email);
   if (!entry) {
     res.status(400).json({ success: false, message: "No pending registration for this email." });
     return;
@@ -452,7 +472,7 @@ async function resendOtp(req: Request, res: Response): Promise<void> {
   const otp = generateOtp();
   entry.otp = otp;
   entry.expiresAt = Date.now() + 10 * 60 * 1000;
-  otpStore.set(email, entry);
+  await saveOtp(email, entry);
 
   await sendOtpEmail(email, otp, entry.name);
 
@@ -476,7 +496,7 @@ async function registerVendor(req: Request, res: Response): Promise<void> {
   const otp = generateOtp();
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
-  otpStore.set(email, { otp, expiresAt, name, password: hashed, role: "vendor", businessName });
+  await saveOtp(email, { otp, expiresAt, name, password: hashed, role: "vendor", businessName });
 
   await sendOtpEmail(email, otp, name);
 
@@ -1791,6 +1811,16 @@ async function initSchema() {
         service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
         rating REAL NOT NULL, comment TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT NOW() NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS otp_store (
+        email TEXT PRIMARY KEY,
+        otp TEXT NOT NULL,
+        expires_at BIGINT NOT NULL,
+        name TEXT NOT NULL,
+        password TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'customer',
+        business_name TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
       );
     `);
     // Seed admin user from env vars if configured
