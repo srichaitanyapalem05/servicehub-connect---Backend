@@ -3,8 +3,8 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "start": "npx tsx server.ts",
-    "dev": "npx tsx server.ts",
+    "start": "npx tsx --env-file=.env server.ts",
+    "dev": "npx tsx --env-file=.env server.ts",
     "build": "echo 'build done'"
   },
   "private": true,
