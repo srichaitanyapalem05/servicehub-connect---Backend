@@ -379,11 +379,17 @@ function generateToken(payload: { id: string; role: string; email: string }): st
 // JWT authentication middleware
 function authenticate(req: AuthRequest, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith("Bearer ")) {
+  let token: string | undefined;
+  if (authHeader?.startsWith("Bearer ")) {
+    token = authHeader.split(" ")[1];
+  } else if (req.query.token) {
+    // Allow token via query param (used for SSE which can't set headers)
+    token = req.query.token as string;
+  }
+  if (!token) {
     res.status(401).json({ success: false, message: "No token provided" });
     return;
   }
-  const token = authHeader.split(" ")[1];
   try {
     req.user = jwt.verify(token, JWT_SECRET) as { id: string; role: string; email: string };
     next();
@@ -1034,6 +1040,47 @@ async function createBooking(req: AuthRequest, res: Response): Promise<void> {
     await trackPromoUsage(booking.id, req.user!.id, couponCode);
   }
 
+  // Notify vendor about new booking
+  const userNotifyName = user?.name || customerName || "A customer";
+  await db.insert(notificationsTable).values({
+    id: generateId(),
+    userId: service.vendorId,
+    title: "New Booking",
+    message: `${userNotifyName} has booked "${service.title}" for ${date} at ${time}.`,
+    type: "general",
+    isRead: false,
+    redirectUrl: "/vendor",
+    bookingId: booking.id,
+  });
+  sendSSENotification(service.vendorId, {
+    type: "booking_confirmed",
+    title: "New Booking",
+    message: `New booking for "${service.title}" on ${date} at ${time}.`,
+    bookingId: booking.id,
+  });
+
+  // Notify admin about new booking
+  const admins = await pool.query(
+    `SELECT id FROM users WHERE role = 'admin' LIMIT 5`
+  );
+  for (const admin of admins.rows) {
+    await db.insert(notificationsTable).values({
+      id: generateId(),
+      userId: admin.id,
+      title: "New Booking Created",
+      message: `${userNotifyName} booked "${service.title}" on ${date}.`,
+      type: "general",
+      isRead: false,
+      bookingId: booking.id,
+    });
+    sendSSENotification(admin.id, {
+      type: "booking_confirmed",
+      title: "New Booking Created",
+      message: `New booking for "${service.title}".`,
+      bookingId: booking.id,
+    });
+  }
+
   res.status(201).json(booking);
 }
 
@@ -1422,6 +1469,38 @@ async function adminApproveService(req: Request, res: Response): Promise<void> {
     .where(eq(servicesTable.id, id))
     .returning();
 
+  // Send notification to vendor about service approval/rejection
+  const [vendor] = await db
+    .select({ userId: vendorsTable.userId })
+    .from(vendorsTable)
+    .where(eq(vendorsTable.id, service.vendorId))
+    .limit(1);
+
+  if (vendor) {
+    const notifType = status === "approved" ? "service_approved" : "general";
+    const notifTitle = status === "approved" ? "Service Approved" : "Service Rejected";
+    const notifMsg = status === "approved"
+      ? `Your service "${service.title}" has been approved and is now live on the platform.`
+      : `Your service "${service.title}" has been rejected. Please check the requirements and resubmit.`;
+
+    await db.insert(notificationsTable).values({
+      id: generateId(),
+      userId: vendor.userId,
+      title: notifTitle,
+      message: notifMsg,
+      type: notifType as any,
+      isRead: false,
+      redirectUrl: "/vendor",
+    });
+
+    // Push SSE notification
+    sendSSENotification(vendor.userId, {
+      type: notifType,
+      title: notifTitle,
+      message: notifMsg,
+    });
+  }
+
   res.json({ success: true, data: updated });
 }
 
@@ -1785,6 +1864,47 @@ async function markAllNotificationsRead(req: AuthRequest, res: Response): Promis
   res.json({ success: true });
 }
 
+// ── SSE (Server-Sent Events) for Real-Time Notifications ──────────────
+
+const sseClients = new Map<string, Set<Response>>();
+
+function addSSEClient(userId: string, res: Response) {
+  if (!sseClients.has(userId)) {
+    sseClients.set(userId, new Set());
+  }
+  sseClients.get(userId)!.add(res);
+  res.on("close", () => {
+    sseClients.get(userId)?.delete(res);
+    if (sseClients.get(userId)?.size === 0) {
+      sseClients.delete(userId);
+    }
+  });
+}
+
+function sendSSENotification(userId: string, data: object) {
+  const clients = sseClients.get(userId);
+  if (!clients) return;
+  const payload = `data: ${JSON.stringify(data)}\n\n`;
+  for (const client of clients) {
+    try {
+      client.write(payload);
+    } catch {
+      clients.delete(client);
+    }
+  }
+}
+
+async function sseHandler(req: AuthRequest, res: Response): Promise<void> {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write("data: {\"type\":\"connected\"}\n\n");
+  addSSEClient(req.user!.id, res);
+}
+
 // ── Reviews (enhanced) ────────────────────────────────────────
 
 async function createReview(req: AuthRequest, res: Response): Promise<void> {
@@ -1863,7 +1983,27 @@ async function createReview(req: AuthRequest, res: Response): Promise<void> {
     .where(eq(usersTable.id, req.user!.id))
     .limit(1);
 
-  res.status(201).json({ ...review, user: { name: user?.name ?? "Anonymous" } });
+  // Notify vendor about new review
+  const reviewerName = user?.name || "A customer";
+  await db.insert(notificationsTable).values({
+    id: generateId(),
+    userId: booking.vendorId,
+    title: "New Review",
+    message: `${reviewerName} left a ${rating}-star review for "${service.title}".`,
+    type: "general",
+    isRead: false,
+    redirectUrl: "/vendor/reviews",
+    bookingId: booking.id,
+  });
+  sendSSENotification(booking.vendorId, {
+    type: "review_request",
+    title: "New Review",
+    message: `New ${rating}-star review for "${service.title}".`,
+    bookingId: booking.id,
+    redirectUrl: "/vendor/reviews",
+  });
+
+  res.status(201).json({ ...review, user: { name: reviewerName } });
 }
 
 async function updateReview(req: AuthRequest, res: Response): Promise<void> {
@@ -2104,6 +2244,14 @@ async function updateVendorBooking(req: AuthRequest, res: Response): Promise<voi
       bookingId: booking.id,
     });
 
+    // SSE: Push real-time notification to customer
+    sendSSENotification(booking.userId, {
+      type: "booking_completed",
+      message: `Service "${serviceTitle}" completed. Please leave a review.`,
+      redirectUrl: `/user/my-bookings?booking=${booking.id}&action=review`,
+      bookingId: booking.id,
+    });
+
     // Update promo eligibility — mark promo_usage records as eligible for reuse
     if (booking.couponCode) {
       const [promo] = await db
@@ -2124,8 +2272,46 @@ async function updateVendorBooking(req: AuthRequest, res: Response): Promise<voi
       }
     }
 
-    // Create a notification for review request if not already auto-created
-    // (already handled above with booking_completed type)
+    // Notification for the vendor
+    const vendorNotifId = generateId();
+    await db.insert(notificationsTable).values({
+      id: vendorNotifId,
+      userId: booking.vendorId,
+      title: "Booking Completed",
+      message: `Booking for "${serviceTitle}" has been marked as completed successfully.`,
+      type: "general",
+      isRead: false,
+      redirectUrl: `/vendor/bookings`,
+      bookingId: booking.id,
+    });
+    sendSSENotification(booking.vendorId, {
+      type: "booking_completed",
+      message: `Booking for "${serviceTitle}" completed successfully.`,
+      bookingId: booking.id,
+    });
+
+    // Notification for admin
+    // Find admin user(s) to notify
+    const admins = await pool.query(
+      `SELECT id FROM users WHERE role = 'admin' LIMIT 5`
+    );
+    for (const admin of admins.rows) {
+      const adminNotifId = generateId();
+      await db.insert(notificationsTable).values({
+        id: adminNotifId,
+        userId: admin.id,
+        title: "Booking Completed by Vendor",
+        message: `Booking for "${serviceTitle}" has been completed by the vendor.`,
+        type: "general",
+        isRead: false,
+        bookingId: booking.id,
+      });
+      sendSSENotification(admin.id, {
+        type: "booking_completed",
+        message: `Booking for "${serviceTitle}" completed by vendor.`,
+        bookingId: booking.id,
+      });
+    }
   }
 
   res.json(updated);
@@ -2504,6 +2690,9 @@ router.get("/notifications", authenticate, getMyNotifications);
 router.get("/notifications/count", authenticate, getUnreadNotificationCount);
 router.patch("/notifications/:id/read", authenticate, markNotificationRead);
 router.post("/notifications/read-all", authenticate, markAllNotificationsRead);
+
+// SSE for Real-Time Notifications
+router.get("/notifications/sse", authenticate, sseHandler);
 
 // Reviews (enhanced)
 router.post(
