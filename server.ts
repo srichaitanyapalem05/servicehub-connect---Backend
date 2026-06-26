@@ -1040,18 +1040,22 @@ async function createBooking(req: AuthRequest, res: Response): Promise<void> {
     await trackPromoUsage(booking.id, req.user!.id, couponCode);
   }
 
-  // Notify vendor about new booking
+  // Notify vendor about new booking — look up the vendor's user_id
   const userNotifyName = user?.name || customerName || "A customer";
-  await db.insert(notificationsTable).values({
-    id: generateId(),
-    userId: service.vendorId,
-    title: "New Booking",
-    message: `${userNotifyName} has booked "${service.title}" for ${date} at ${time}.`,
-    type: "general",
-    isRead: false,
-    redirectUrl: "/vendor",
-    bookingId: booking.id,
-  });
+  const [vendorRow] = await db.select().from(vendorsTable).where(eq(vendorsTable.id, service.vendorId)).limit(1);
+  const vendorUserId = vendorRow?.userId;
+  if (vendorUserId) {
+    await db.insert(notificationsTable).values({
+      id: generateId(),
+      userId: vendorUserId,
+      title: "New Booking",
+      message: `${userNotifyName} has booked "${service.title}" for ${date} at ${time}.`,
+      type: "general",
+      isRead: false,
+      redirectUrl: "/vendor",
+      bookingId: booking.id,
+    });
+  }
   sendSSENotification(service.vendorId, {
     type: "booking_confirmed",
     title: "New Booking",
